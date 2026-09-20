@@ -13,6 +13,7 @@
   "dependencies": {
     "@onkernel/sdk": "^0.110.0",
     "@onkernel/vault-react": "^0.1.0",
+    "jose": "^6.2.12",
     "next": "^16.3.5",
     "react": "^19.2.3",
     "react-dom": "^19.2.3"

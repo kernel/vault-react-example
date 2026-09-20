@@ -1,6 +1,7 @@
 import { join } from 'node:path';
 import { createCollectionHandler } from './collection-handler';
 import { FileCollectionRequestStore } from './request-store';
+import { localPrivateKeyProtector } from './private-key-protector';
 import { KernelCredentialVaultClient, MockCredentialVaultClient } from './vault-client';
 
 let handler: ReturnType<typeof createCollectionHandler> | undefined;
@@ -16,7 +17,7 @@ export function getCollectionHandler() {
         required('KERNEL_API_KEY'),
         process.env.KERNEL_API_BASE_URL,
       );
-  handler = createCollectionHandler({ appOrigin, store, vault });
+  handler = createCollectionHandler({ appOrigin, store, vault, protector: localPrivateKeyProtector() });
   return handler;
 }
 

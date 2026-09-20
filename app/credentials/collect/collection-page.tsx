@@ -9,6 +9,7 @@ import {
   type CredentialItem,
 } from '@onkernel/vault-react';
 import { readCollectionToken } from '@/lib/collection-token';
+import { encryptSubmission, type CollectionEncryption } from '@/lib/credential-envelope';
 
 const endpoint = '/api/credential-requests/current';
 const errorCodes = new Set<CollectionErrorCode>([
@@ -43,7 +44,10 @@ export function CollectionPage() {
 }
 
 function RequestForm({ token }: { token: string }) {
-  const [item, setItem] = useState<CredentialItem>();
+  const [collection, setCollection] = useState<{
+    item: CredentialItem;
+    encryption: CollectionEncryption;
+  }>();
   const [failure, setFailure] = useState<CollectionErrorCode>();
   const authorization = `Bearer ${token}`;
 
@@ -57,8 +61,12 @@ function RequestForm({ token }: { token: string }) {
     })
       .then(async (response) => {
         if (!response.ok) throw new CredentialFormError(await responseError(response, 'unavailable'));
-        const safe = safeCredentialItem(await response.json());
-        if (!controller.signal.aborted) setItem(safe);
+        const data = await response.json();
+        const item = safeCredentialItem(data.item);
+        if (data.encryption.itemId !== item.id || data.encryption.version !== item.version) {
+          throw new CredentialFormError('unavailable');
+        }
+        if (!controller.signal.aborted) setCollection({ item, encryption: data.encryption });
       })
       .catch((error: unknown) => {
         if (!controller.signal.aborted) {
@@ -75,20 +83,21 @@ function RequestForm({ token }: { token: string }) {
     };
     return <Message>{messages[failure] ?? 'collection unavailable. request a new link.'}</Message>;
   }
-  if (!item) return <p role="status">loading credential fields…</p>;
+  if (!collection) return <p role="status">loading credential fields…</p>;
 
   return (
     <CredentialForm
       className="customer-credential-form"
-      item={item}
+      item={collection.item}
       submitLabel="Save credentials"
       onSubmit={async (submission) => {
+        const envelope = await encryptSubmission(submission, collection.encryption);
         const response = await fetch(endpoint, {
           method: 'PATCH',
           credentials: 'omit',
           cache: 'no-store',
-          headers: { Authorization: authorization, 'Content-Type': 'application/json' },
-          body: JSON.stringify(submission),
+          headers: { Authorization: authorization, 'Content-Type': 'application/jose' },
+          body: envelope,
         });
         if (!response.ok) {
           throw new CredentialFormError(await responseError(response, 'unavailable'));

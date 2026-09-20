@@ -1,6 +1,9 @@
 import { safeCredentialItem, type CredentialSubmission } from '@onkernel/vault-react/data';
 import type { CollectionRequestStore } from './request-store';
 import { collectionTokenDigest } from './server-token';
+import { decryptSubmission, keyBinding } from './collection-keys';
+import { MAX_ENVELOPE_BYTES } from './credential-envelope';
+import type { PrivateKeyProtector } from './private-key-protector';
 import {
   VaultConflictError,
   VaultInvalidRequestError,
@@ -16,7 +19,7 @@ function json(body: unknown, status = 200) {
   });
 }
 
-async function readJson(request: Request): Promise<unknown> {
+async function readEnvelope(request: Request): Promise<string> {
   const reader = request.body?.getReader();
   if (!reader) throw new Error('invalid request');
   const chunks: Uint8Array[] = [];
@@ -26,7 +29,7 @@ async function readJson(request: Request): Promise<unknown> {
       const { done, value } = await reader.read();
       if (done) break;
       size += value.byteLength;
-      if (size > 128 * 1024) {
+      if (size > MAX_ENVELOPE_BYTES) {
         await reader.cancel();
         throw new Error('invalid request');
       }
@@ -41,48 +44,69 @@ async function readJson(request: Request): Promise<unknown> {
     body.set(chunk, offset);
     offset += chunk.byteLength;
   }
-  return JSON.parse(new TextDecoder().decode(body));
+  return new TextDecoder('utf-8', { fatal: true }).decode(body);
 }
 
 export function createCollectionHandler({
   appOrigin,
   store,
   vault,
+  protector,
   now = Date.now,
 }: {
   appOrigin: string;
   store: CollectionRequestStore;
   vault: CredentialVaultClient;
+  protector: PrivateKeyProtector;
   now?: () => number;
 }) {
   const trustedOrigin = new URL(appOrigin).origin;
+  // Local-only serialization. Production needs a durable, distributed request claim.
+  const submitting = new Set<string>();
 
   return async (request: Request): Promise<Response> => {
+    let claimedDigest: string | undefined;
     try {
       if (!['GET', 'PATCH'].includes(request.method)) return json({ code: 'invalid' }, 405);
       const bearer = bearerPattern.exec(request.headers.get('Authorization') ?? '')?.[1];
       if (!bearer) return json({ code: 'unavailable' }, 401);
 
       const digest = collectionTokenDigest(bearer);
+      if (request.method === 'PATCH') {
+        if (request.headers.get('Origin') !== trustedOrigin) return json({ code: 'unavailable' }, 403);
+        if (submitting.has(digest)) return json({ code: 'unavailable' }, 409);
+        submitting.add(digest);
+        claimedDigest = digest;
+      }
       const mapping = await store.findByTokenDigest(digest);
       if (!mapping) return json({ code: 'unavailable' }, 404);
       if (mapping.revokedAt !== null) return json({ code: 'unavailable' }, 410);
       if (mapping.consumedAt !== null) return json({ code: 'consumed' }, 410);
       if (mapping.expiresAt <= now()) return json({ code: 'expired' }, 410);
-      if (request.method === 'PATCH' && request.headers.get('Origin') !== trustedOrigin) {
-        return json({ code: 'unavailable' }, 403);
-      }
 
       const item = safeCredentialItem(await vault.retrieve(mapping));
       if (item.id !== mapping.itemId) return json({ code: 'unavailable' }, 404);
-      if (request.method === 'GET') return json(item);
-      if (!request.headers.get('Content-Type')?.startsWith('application/json')) {
+      if (request.method === 'GET') {
+        const { x, y } = mapping.key.publicKey;
+        return json({
+          item,
+          encryption: {
+            ...keyBinding(mapping),
+            version: item.version,
+            publicKey: { kty: 'EC', crv: 'P-256', x, y },
+          },
+        });
+      }
+      if (request.headers.get('Content-Type')?.split(';')[0].trim() !== 'application/jose') {
         return json({ code: 'invalid' }, 400);
       }
 
       let body: unknown;
+      let boundVersion: number;
       try {
-        body = await readJson(request);
+        const decrypted = await decryptSubmission(await readEnvelope(request), mapping, protector);
+        body = decrypted.submission;
+        boundVersion = decrypted.version;
       } catch {
         return json({ code: 'invalid' }, 400);
       }
@@ -91,6 +115,7 @@ export function createCollectionHandler({
       }
       const input = body as Record<string, unknown>;
       if (
+        input.version !== boundVersion ||
         !Number.isSafeInteger(input.version) ||
         Number(input.version) < 1 ||
         !input.fields ||
@@ -131,8 +156,9 @@ export function createCollectionHandler({
 
       try {
         const updated = safeCredentialItem(await vault.update(mapping, submission));
+        if (updated.id !== mapping.itemId) throw new Error('unexpected vault item');
         await store.markConsumed(digest, now());
-        return json(updated);
+        return json({ saved: true });
       } catch (error) {
         if (error instanceof VaultConflictError) return json({ code: 'stale' }, 409);
         if (error instanceof VaultInvalidRequestError) return json({ code: 'invalid' }, 400);
@@ -140,6 +166,8 @@ export function createCollectionHandler({
       }
     } catch {
       return json({ code: 'unavailable' }, 502);
+    } finally {
+      if (claimedDigest) submitting.delete(claimedDigest);
     }
   };
 }

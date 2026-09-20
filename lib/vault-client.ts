@@ -23,7 +23,7 @@ export class KernelCredentialVaultClient implements CredentialVaultClient {
   } as const;
 
   constructor(apiKey: string, baseURL?: string) {
-    this.kernel = new Kernel({ apiKey, maxRetries: 0, ...(baseURL ? { baseURL } : {}) });
+    this.kernel = new Kernel({ apiKey, maxRetries: 0, logLevel: 'off', ...(baseURL ? { baseURL } : {}) });
   }
 
   async retrieve(request: CollectionRequest) {
