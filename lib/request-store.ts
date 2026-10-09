@@ -1,6 +1,5 @@
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
-import type { CollectionKey } from './collection-keys';
 
 export type CollectionRequest = {
   id: string;
@@ -8,7 +7,6 @@ export type CollectionRequest = {
   vaultId: string;
   itemKey: string;
   itemId: string;
-  key: CollectionKey;
   expiresAt: number;
   consumedAt: number | null;
   revokedAt: number | null;
@@ -24,8 +22,6 @@ type StoreData = { requests: CollectionRequest[] };
 
 /** Local development only. Implement CollectionRequestStore with your database in production. */
 export class FileCollectionRequestStore implements CollectionRequestStore {
-  private pendingMutation = Promise.resolve();
-
   constructor(private readonly path: string) {}
 
   async findByTokenDigest(tokenDigest: string) {
@@ -33,32 +29,20 @@ export class FileCollectionRequestStore implements CollectionRequestStore {
   }
 
   async save(request: CollectionRequest) {
-    return this.mutate((data) => {
-      if (data.requests.some(({ id, tokenDigest }) => id === request.id || tokenDigest === request.tokenDigest)) {
-        throw new Error('collection request already exists');
-      }
-      data.requests.push(request);
-    });
+    const data = await this.read();
+    if (data.requests.some(({ id, tokenDigest }) => id === request.id || tokenDigest === request.tokenDigest)) {
+      throw new Error('collection request already exists');
+    }
+    data.requests.push(request);
+    await this.write(data);
   }
 
   async markConsumed(tokenDigest: string, consumedAt: number) {
-    return this.mutate((data) => {
-      const request = data.requests.find((candidate) => candidate.tokenDigest === tokenDigest);
-      if (!request) throw new Error('collection request not found');
-      request.consumedAt ??= consumedAt;
-      request.key.wrappedPrivateKey = null;
-    });
-  }
-
-  private mutate(update: (data: StoreData) => void) {
-    const mutation = this.pendingMutation.then(async () => {
-      const data = await this.read();
-      update(data);
-      await this.write(data);
-    });
-    // A failed write must not block later reconciliation attempts.
-    this.pendingMutation = mutation.catch(() => {});
-    return mutation;
+    const data = await this.read();
+    const request = data.requests.find((candidate) => candidate.tokenDigest === tokenDigest);
+    if (!request) throw new Error('collection request not found');
+    request.consumedAt ??= consumedAt;
+    await this.write(data);
   }
 
   private async read(): Promise<StoreData> {

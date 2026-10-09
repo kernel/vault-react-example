@@ -9,7 +9,7 @@ import {
   type CredentialItem,
 } from '@onkernel/vault-react';
 import { readCollectionToken } from '@/lib/collection-token';
-import { encryptSubmission, type CollectionEncryption } from '@/lib/credential-envelope';
+import { encryptSubmission, type VaultEncryptionKey } from '@/lib/encrypted-submission';
 
 const endpoint = '/api/credential-requests/current';
 const errorCodes = new Set<CollectionErrorCode>([
@@ -44,10 +44,7 @@ export function CollectionPage() {
 }
 
 function RequestForm({ token }: { token: string }) {
-  const [collection, setCollection] = useState<{
-    item: CredentialItem;
-    encryption: CollectionEncryption;
-  }>();
+  const [collection, setCollection] = useState<{ item: CredentialItem; key: VaultEncryptionKey }>();
   const [failure, setFailure] = useState<CollectionErrorCode>();
   const authorization = `Bearer ${token}`;
 
@@ -61,12 +58,10 @@ function RequestForm({ token }: { token: string }) {
     })
       .then(async (response) => {
         if (!response.ok) throw new CredentialFormError(await responseError(response, 'unavailable'));
-        const data = await response.json();
-        const item = safeCredentialItem(data.item);
-        if (data.encryption.itemId !== item.id || data.encryption.version !== item.version) {
-          throw new CredentialFormError('unavailable');
-        }
-        if (!controller.signal.aborted) setCollection({ item, encryption: data.encryption });
+        const body = await response.json();
+        const item = safeCredentialItem(body.item);
+        const key = vaultEncryptionKey(body.encryption_key);
+        if (!controller.signal.aborted) setCollection({ item, key });
       })
       .catch((error: unknown) => {
         if (!controller.signal.aborted) {
@@ -91,13 +86,12 @@ function RequestForm({ token }: { token: string }) {
       item={collection.item}
       submitLabel="Save credentials"
       onSubmit={async (submission) => {
-        const envelope = await encryptSubmission(submission, collection.encryption);
         const response = await fetch(endpoint, {
           method: 'PATCH',
           credentials: 'omit',
           cache: 'no-store',
-          headers: { Authorization: authorization, 'Content-Type': 'application/jose' },
-          body: envelope,
+          headers: { Authorization: authorization, 'Content-Type': 'application/json' },
+          body: JSON.stringify(await encryptSubmission(submission, collection.key)),
         });
         if (!response.ok) {
           throw new CredentialFormError(await responseError(response, 'unavailable'));
@@ -106,6 +100,20 @@ function RequestForm({ token }: { token: string }) {
       }}
     />
   );
+}
+
+function vaultEncryptionKey(value: unknown): VaultEncryptionKey {
+  const key = value as VaultEncryptionKey | undefined;
+  if (
+    typeof key?.kid !== 'string' ||
+    key.jwk?.kty !== 'EC' ||
+    key.jwk.crv !== 'P-256' ||
+    typeof key.jwk.x !== 'string' ||
+    typeof key.jwk.y !== 'string'
+  ) {
+    throw new CredentialFormError('unavailable');
+  }
+  return { kid: key.kid, jwk: { kty: 'EC', crv: 'P-256', x: key.jwk.x, y: key.jwk.y } };
 }
 
 function Message({ children }: { children: React.ReactNode }) {

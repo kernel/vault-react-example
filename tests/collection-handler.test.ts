@@ -1,20 +1,18 @@
 import { expect, mock, test } from 'bun:test';
-import { randomBytes } from 'node:crypto';
-import { CompactEncrypt, importJWK } from 'jose';
-import { createCollectionKey, type CollectionKey } from '../lib/collection-keys';
-import { CONTENT_ALGORITHM, ENVELOPE_TYPE, KEY_ALGORITHM, MAX_ENVELOPE_BYTES, MAX_PLAINTEXT_BYTES } from '../lib/credential-envelope';
-import { LocalPrivateKeyProtector } from '../lib/private-key-protector';
-import type { CredentialItem, CredentialSubmission } from '@onkernel/vault-react/data';
+import type { CredentialItem } from '@onkernel/vault-react/data';
 import { createCollectionHandler } from '../lib/collection-handler';
+import type { EncryptedSubmission, VaultEncryptionKey } from '../lib/encrypted-submission';
 import type { CollectionRequest, CollectionRequestStore } from '../lib/request-store';
 import { collectionTokenDigest } from '../lib/server-token';
-import { KernelCredentialVaultClient, VaultConflictError, VaultInvalidRequestError, type CredentialVaultClient } from '../lib/vault-client';
+import { VaultConflictError, type CredentialVaultClient } from '../lib/vault-client';
 
 const origin = 'https://app.example.com';
 const token = 'a'.repeat(43);
 const digest = collectionTokenDigest(token);
 const authorization = `Bearer ${token}`;
 const now = 1_700_000_000_000;
+const encryptionKey: VaultEncryptionKey = { kid: 'vtk_example', jwk: { kty: 'EC', crv: 'P-256', x: 'x', y: 'y' } };
+const jwe = 'eyJhbGciOiJFQ0RILUVTIn0..aXY.Y2lwaGVydGV4dA.dGFn';
 
 function credentialItem(): CredentialItem {
   return {
@@ -41,21 +39,16 @@ function credentialItem(): CredentialItem {
 }
 
 class MemoryStore implements CollectionRequestStore {
-  request: CollectionRequest | null;
-
-  constructor(key: CollectionKey) {
-    this.request = {
-      key,
-      id: 'request-1',
-      tokenDigest: digest,
-      vaultId: 'server-vault',
-      itemKey: 'server-key',
-      itemId: 'vi_example',
-      expiresAt: now + 60_000,
-      consumedAt: null,
-      revokedAt: null,
-    };
-  }
+  request: CollectionRequest | null = {
+    id: 'request-1',
+    tokenDigest: digest,
+    vaultId: 'server-vault',
+    itemKey: 'server-key',
+    itemId: 'vi_example',
+    expiresAt: now + 60_000,
+    consumedAt: null,
+    revokedAt: null,
+  };
 
   async findByTokenDigest(candidate: string) {
     return candidate === digest ? this.request : null;
@@ -68,34 +61,21 @@ class MemoryStore implements CollectionRequestStore {
   async markConsumed(candidate: string, consumedAt: number) {
     if (!this.request || candidate !== digest) throw new Error('not found');
     this.request.consumedAt = consumedAt;
-    this.request.key.wrappedPrivateKey = null;
   }
 }
 
-async function setup() {
-  const protector = new LocalPrivateKeyProtector(randomBytes(32).toString('base64'));
-  const key = await createCollectionKey('request-1', 'vi_example', protector);
-  const store = new MemoryStore(key);
+function setup() {
+  const store = new MemoryStore();
   const retrieve = mock(async (_request: CollectionRequest): Promise<unknown> => credentialItem());
   const update = mock(
-    async (_request: CollectionRequest, _submission: CredentialSubmission): Promise<unknown> => ({
+    async (_request: CollectionRequest, _submission: EncryptedSubmission): Promise<unknown> => ({
       ...credentialItem(),
       version: 8,
     }),
   );
-  const vault: CredentialVaultClient = { retrieve, update };
-  const handler = createCollectionHandler({ appOrigin: origin, store, vault, protector, now: () => now });
-  const publicKey = await importJWK(key.publicKey, KEY_ALGORITHM);
-  const encrypt = async (body: unknown, overrides: Record<string, unknown> = {}) => {
-    const version = (body as { version?: number })?.version ?? 7;
-    return new CompactEncrypt(new TextEncoder().encode(JSON.stringify(body)))
-      .setProtectedHeader({
-        alg: KEY_ALGORITHM, enc: CONTENT_ALGORITHM, typ: ENVELOPE_TYPE,
-        kid: key.keyId, request_id: 'request-1', item_id: 'vi_example', version,
-        ...overrides,
-      }).encrypt(publicKey);
-  };
-  return { handler, store, retrieve, update, encrypt, protector };
+  const vault: CredentialVaultClient = { retrieve, encryptionKey: async () => encryptionKey, update };
+  const handler = createCollectionHandler({ appOrigin: origin, store, vault, now: () => now });
+  return { handler, store, retrieve, update };
 }
 
 const get = (bearer = authorization) =>
@@ -106,33 +86,29 @@ const get = (bearer = authorization) =>
 const patch = (body: unknown, requestOrigin = origin, bearer = authorization) =>
   new Request(`${origin}/api/credential-requests/current`, {
     method: 'PATCH',
-    headers: { Authorization: bearer, Origin: requestOrigin, 'Content-Type': 'application/jose' },
-    body: typeof body === 'string' ? body : JSON.stringify(body),
+    headers: { Authorization: bearer, Origin: requestOrigin, 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
   });
 
 test('only a valid fragment bearer can authorize a request', async () => {
-  const { handler, retrieve } = await setup();
+  const { handler, retrieve } = setup();
   for (const request of [get(''), get('Bearer request_123'), get(`Bearer ${'a'.repeat(42)}`)]) {
     expect((await handler(request)).status).toBe(401);
   }
   expect(retrieve).not.toHaveBeenCalled();
 });
 
-test('returns only the safe item projection', async () => {
-  const { handler } = await setup();
+test('returns the safe item projection and the vault encryption key', async () => {
+  const { handler } = setup();
   const response = await handler(get());
   expect(response.status).toBe(200);
   expect(response.headers.get('Cache-Control')).toBe('no-store');
   expect(response.headers.get('Referrer-Policy')).toBe('no-referrer');
-  const body = await response.json();
-  expect(body.item).toEqual(credentialItem());
-  expect(body.encryption).toMatchObject({ requestId: 'request-1', itemId: 'vi_example', version: 7 });
-  expect(Object.keys(body.encryption).sort()).toEqual(['itemId', 'keyId', 'publicKey', 'requestId', 'version']);
-  expect(Object.keys(body.encryption.publicKey).sort()).toEqual(['crv', 'kty', 'x', 'y']);
+  expect(await response.json()).toEqual({ item: credentialItem(), encryption_key: encryptionKey });
 });
 
 test('rejects expired, consumed, revoked, and replaced targets', async () => {
-  const { handler, store, retrieve } = await setup();
+  const { handler, store, retrieve } = setup();
   store.request!.expiresAt = now;
   expect((await handler(get())).status).toBe(410);
   store.request!.expiresAt = now + 60_000;
@@ -147,7 +123,7 @@ test('rejects expired, consumed, revoked, and replaced targets', async () => {
 });
 
 test('rejects cross-origin writes before loading the item', async () => {
-  const { handler, retrieve } = await setup();
+  const { handler, retrieve } = setup();
   const response = await handler(
     patch({ version: 7, fields: {} }, 'https://attacker.example.com'),
   );
@@ -155,10 +131,10 @@ test('rejects cross-origin writes before loading the item', async () => {
   expect(retrieve).not.toHaveBeenCalled();
 });
 
-test('writes the mapped target with rendered version and consumes the request', async () => {
-  const { handler, store, update, encrypt } = await setup();
+test('relays ciphertext to the mapped target with rendered version and consumes the request', async () => {
+  const { handler, store, update } = setup();
   const response = await handler(
-    patch(await encrypt({ version: 7, fields: { password: { value: ' exact ' } } })),
+    patch({ version: 7, fields: { password: { encrypted_value: jwe }, note: { value: null } } }),
   );
   expect(response.status).toBe(200);
   expect(update).toHaveBeenCalledTimes(1);
@@ -169,214 +145,47 @@ test('writes the mapped target with rendered version and consumes the request', 
   });
   expect(update.mock.calls[0][1]).toEqual({
     version: 7,
-    fields: { password: { value: ' exact ' } },
+    fields: { password: { encrypted_value: jwe }, note: { value: null } },
   });
   expect(store.request?.consumedAt).toBe(now);
-  expect(store.request?.key.wrappedPrivateKey).toBeNull();
   expect(await (await handler(get())).json()).toEqual({ code: 'consumed' });
-  expect((await handler(patch(await encrypt({ version: 7, fields: {} })))).status).toBe(410);
-  expect(update).toHaveBeenCalledTimes(1);
 });
 
 test('unchanged completion skips the vault write and consumes the request', async () => {
-  const { handler, store, update, encrypt } = await setup();
-  expect(await (await handler(patch(await encrypt({ version: 7, fields: {} })))).json()).toEqual({ unchanged: true });
+  const { handler, store, update } = setup();
+  expect(await (await handler(patch({ version: 7, fields: {} }))).json()).toEqual({ unchanged: true });
   expect(update).not.toHaveBeenCalled();
   expect(store.request?.consumedAt).toBe(now);
 });
 
 test('stale writes return a conflict without consuming the request', async () => {
-  const { handler, store, update, encrypt } = await setup();
-  expect((await handler(patch(await encrypt({ version: 6, fields: { note: { value: 'edit' } } })))).status).toBe(409);
+  const { handler, store, update } = setup();
+  expect((await handler(patch({ version: 6, fields: { note: { encrypted_value: jwe } } }))).status).toBe(409);
   expect(update).not.toHaveBeenCalled();
   update.mockImplementationOnce(async () => {
     throw new VaultConflictError();
   });
-  expect((await handler(patch(await encrypt({ version: 7, fields: { note: { value: 'edit' } } })))).status).toBe(409);
+  expect((await handler(patch({ version: 7, fields: { note: { encrypted_value: jwe } } }))).status).toBe(409);
   expect(store.request?.consumedAt).toBeNull();
 });
 
-test('rejects TOTP, unknown fields, required clearing, oversized bodies, and malformed values', async () => {
-  const { handler, update, encrypt } = await setup();
+test('rejects plaintext values, TOTP, unknown fields, required clearing, and malformed ciphertext', async () => {
+  const { handler, update } = setup();
   for (const body of [
-    { version: 7, fields: { otp: { value: 'seed' } } },
-    { version: 7, fields: { unknown: { value: 'edit' } } },
-    { version: 7, fields: { password: { value: null } } },
+    { version: 7, fields: { password: { value: 'plaintext' } } },
     { version: 7, fields: { note: { value: '' } } },
-    { version: 7, fields: { note: { value: 42 } } },
-    { version: 7, fields: { note: { value: 'edit', extra: true } } },
-    { version: 7, fields: { note: { value: 'é'.repeat(8193) } } },
-    { version: 7, fields: [] },
-    null,
+    { version: 7, fields: { note: { value: null, encrypted_value: jwe } } },
+    { version: 7, fields: { note: { encrypted_value: 'not-a-jwe' } } },
+    { version: 7, fields: { note: { encrypted_value: `${jwe}.extra` } } },
+    { version: 7, fields: { note: { encrypted_value: null } } },
+    { version: 7, fields: { note: { encrypted_value: `${'a'.repeat(24 * 1024)}....` } } },
+    { version: 7, fields: { otp: { encrypted_value: jwe } } },
+    { version: 7, fields: { unknown: { encrypted_value: jwe } } },
+    { version: 7, fields: { password: { value: null } } },
     { version: 7, fields: {}, vaultId: 'attacker-vault' },
-    { version: 7, fields: { note: { value: 'x'.repeat(128 * 1024) } } },
+    { version: 7, fields: { note: { encrypted_value: `a${'.'.repeat(4)}${'b'.repeat(128 * 1024)}` } } },
   ]) {
-    expect((await handler(patch(await encrypt(body)))).status).toBe(400);
+    expect((await handler(patch(body))).status).toBe(400);
   }
   expect(update).not.toHaveBeenCalled();
-});
-
-test('rejects plaintext, malformed JWE, wrong keys, and mismatched authenticated bindings', async () => {
-  const { handler, update, encrypt, store } = await setup();
-  const other = await setup();
-  const body = { version: 7, fields: { note: { value: 'synthetic edit' } } };
-  const wrappedKey = store.request!.key.wrappedPrivateKey;
-  const envelopes = [
-    JSON.stringify(body), 'not-a-jwe', await other.encrypt(body),
-    await other.encrypt(body, { kid: store.request!.key.keyId }),
-    await encrypt(body, { kid: 'wrong-key' }),
-    await encrypt(body, { request_id: 'other-request' }),
-    await encrypt(body, { item_id: 'other-item' }),
-    await encrypt(body, { version: 8 }),
-    await encrypt(body, { version: '7' }),
-    await encrypt(body, { typ: 'other+jwe' }),
-    await encrypt(body, { enc: 'A128GCM' }),
-  ];
-  for (const envelope of envelopes) {
-    const response = await handler(patch(envelope));
-    expect(response.status).toBe(400);
-    expect(await response.json()).toEqual({ code: 'invalid' });
-  }
-  expect(update).not.toHaveBeenCalled();
-  expect(store.request!.consumedAt).toBeNull();
-  expect(store.request!.key.wrappedPrivateKey).toBe(wrappedKey);
-});
-
-test('rejects tampering with every JWE segment, including protected metadata', async () => {
-  const { handler, update, encrypt } = await setup();
-  const envelope = await encrypt({ version: 7, fields: { note: { value: 'synthetic edit' } } });
-  for (let index = 0; index < 5; index++) {
-    const parts = envelope.split('.');
-    parts[index] = (parts[index][0] === 'A' ? 'B' : 'A') + parts[index].slice(1);
-    expect((await handler(patch(parts.join('.')))).status).toBe(400);
-  }
-  const parts = envelope.split('.');
-  const header = JSON.parse(Buffer.from(parts[0], 'base64url').toString());
-  header.version = 8;
-  parts[0] = Buffer.from(JSON.stringify(header)).toString('base64url');
-  expect((await handler(patch(parts.join('.')))).status).toBe(400);
-  expect(update).not.toHaveBeenCalled();
-});
-
-test('bounds encrypted and decrypted bodies independently and rejects oversized streams', async () => {
-  const { handler, update, encrypt } = await setup();
-  const envelope = await encrypt({ version: 7, fields: { note: { value: 'x'.repeat(MAX_PLAINTEXT_BYTES) } } });
-  expect(envelope.length).toBeLessThan(MAX_ENVELOPE_BYTES);
-  expect((await handler(patch(envelope))).status).toBe(400);
-  const request = patch('');
-  const stream = new ReadableStream({
-    start(controller) {
-      controller.enqueue(new Uint8Array(MAX_ENVELOPE_BYTES));
-      controller.enqueue(new Uint8Array(1));
-      controller.close();
-    },
-  });
-  expect((await handler(new Request(request, { body: stream }))).status).toBe(400);
-  expect(update).not.toHaveBeenCalled();
-});
-
-test('preserves encrypted PATCH expiry, revocation, consumption, identity, and origin checks', async () => {
-  const { handler, update, retrieve, store, encrypt } = await setup();
-  const envelope = await encrypt({ version: 7, fields: { note: { value: 'synthetic edit' } } });
-  for (const state of ['expiresAt', 'revokedAt', 'consumedAt'] as const) {
-    const original = store.request![state];
-    store.request![state] = now;
-    expect((await handler(patch(envelope))).status).toBe(410);
-    if (state === 'expiresAt') store.request!.expiresAt = original!;
-    else store.request![state] = original;
-  }
-  for (const requestOrigin of ['', 'null', 'https://attacker.example.com']) {
-    expect((await handler(patch(envelope, requestOrigin))).status).toBe(403);
-  }
-  expect(retrieve).not.toHaveBeenCalled();
-  retrieve.mockImplementationOnce(async () => ({ ...credentialItem(), id: 'replacement' }));
-  expect((await handler(patch(envelope))).status).toBe(404);
-  const wrongContentType = patch(envelope);
-  wrongContentType.headers.set('Content-Type', 'application/json');
-  expect((await handler(wrongContentType)).status).toBe(400);
-  expect(update).not.toHaveBeenCalled();
-});
-
-test('retains the key after upstream failures and allows a safe retry', async () => {
-  const { handler, update, store, encrypt } = await setup();
-  const envelope = await encrypt({ version: 7, fields: { note: { value: 'synthetic edit' } } });
-  const wrappedKey = store.request!.key.wrappedPrivateKey;
-  for (const [error, status] of [[new VaultInvalidRequestError(), 400], [new Error('upstream details'), 502]] as const) {
-    update.mockImplementationOnce(async () => { throw error; });
-    const response = await handler(patch(envelope));
-    expect(response.status).toBe(status);
-    expect(await response.text()).not.toContain('upstream details');
-    expect(store.request!.consumedAt).toBeNull();
-    expect(store.request!.key.wrappedPrivateKey).toBe(wrappedKey);
-  }
-  expect((await handler(patch(envelope))).status).toBe(200);
-  expect(store.request!.key.wrappedPrivateKey).toBeNull();
-});
-
-test('an uncertain committed write retains the key and version checking prevents replay', async () => {
-  const { handler, update, retrieve, store, encrypt } = await setup();
-  const envelope = await encrypt({ version: 7, fields: { note: { value: 'synthetic edit' } } });
-  update.mockImplementationOnce(async () => {
-    retrieve.mockImplementation(async () => ({ ...credentialItem(), version: 8 }));
-    throw new Error('response lost');
-  });
-  expect((await handler(patch(envelope))).status).toBe(502);
-  expect((await handler(patch(envelope))).status).toBe(409);
-  expect(update).toHaveBeenCalledTimes(1);
-  expect(store.request!.consumedAt).toBeNull();
-  expect(store.request!.key.wrappedPrivateKey).not.toBeNull();
-});
-
-test('a failed consumption write retains key material for reconciliation', async () => {
-  const { handler, update, retrieve, store, encrypt } = await setup();
-  const envelope = await encrypt({ version: 7, fields: { note: { value: 'synthetic edit' } } });
-  store.markConsumed = async () => { throw new Error('storage unavailable'); };
-  update.mockImplementationOnce(async () => {
-    retrieve.mockImplementation(async () => ({ ...credentialItem(), version: 8 }));
-    return { ...credentialItem(), version: 8 };
-  });
-  expect((await handler(patch(envelope))).status).toBe(502);
-  expect((await handler(patch(envelope))).status).toBe(409);
-  expect(update).toHaveBeenCalledTimes(1);
-  expect(store.request!.consumedAt).toBeNull();
-  expect(store.request!.key.wrappedPrivateKey).not.toBeNull();
-});
-
-test('serializes local concurrent submissions and prevents writes after consumption', async () => {
-  const { handler, update, encrypt } = await setup();
-  const envelope = await encrypt({ version: 7, fields: { note: { value: 'synthetic edit' } } });
-  const responses = await Promise.all([handler(patch(envelope)), handler(patch(envelope))]);
-  expect(responses.map(({ status }) => status).sort()).toEqual([200, 409]);
-  expect((await handler(patch(envelope))).status).toBe(410);
-  expect(update).toHaveBeenCalledTimes(1);
-});
-
-test('accepts optional clearing and preserves the complete submission exactly', async () => {
-  const { handler, update, encrypt } = await setup();
-  const body = { version: 7, fields: { password: { value: ' é 🔒 ' }, note: { value: null } } };
-  expect((await handler(patch(await encrypt(body)))).status).toBe(200);
-  expect(update.mock.calls[0][1]).toEqual(body);
-});
-
-test('decrypts into the existing plaintext Kernel SDK PATCH with immutable identity and version', async () => {
-  const { store, protector, encrypt } = await setup();
-  const originalFetch = globalThis.fetch;
-  const upstream = mock(async (_input: string | URL | Request, _init?: RequestInit) => Response.json(credentialItem()));
-  globalThis.fetch = Object.assign(upstream, { preconnect() {} });
-  try {
-    const vault = new KernelCredentialVaultClient(randomBytes(32).toString('hex'), 'https://kernel.example.com');
-    const handler = createCollectionHandler({ appOrigin: origin, store, protector, vault, now: () => now });
-    const body = { version: 7, fields: { password: { value: ' synthetic password ' }, note: { value: null } } };
-    expect((await handler(patch(await encrypt(body)))).status).toBe(200);
-    expect(upstream).toHaveBeenCalledTimes(2);
-    const [url, init] = upstream.mock.calls[1];
-    expect(String(url)).toBe('https://kernel.example.com/vaults/server-vault/items/server-key');
-    expect(init?.method).toBe('PATCH');
-    expect(JSON.parse(String(init?.body))).toEqual({
-      type: 'credential', expected_item_id: 'vi_example', version: 7, spec: { fields: body.fields },
-    });
-    expect(store.request!.key.wrappedPrivateKey).toBeNull();
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
 });
