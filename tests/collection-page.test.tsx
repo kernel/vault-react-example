@@ -1,7 +1,6 @@
 import './setup';
 import { afterEach, beforeEach, expect, mock, test } from 'bun:test';
 import type { CredentialItem } from '@onkernel/vault-react';
-import { compactDecrypt, exportJWK, generateKeyPair } from 'jose';
 
 const { act } = await import('react');
 const { createRoot } = await import('react-dom/client');
@@ -39,14 +38,9 @@ afterEach(async () => {
 
 const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
 
-test('keeps the capability in the fragment and sends only ciphertext', async () => {
-  const { publicKey, privateKey } = await generateKeyPair('ECDH-ES', { crv: 'P-256' });
-  const { x, y } = await exportJWK(publicKey);
-  const encryption_key = { kid: 'vtk_example', jwk: { kty: 'EC', crv: 'P-256', x, y } };
+test('keeps the capability in the fragment and same-origin authorization header', async () => {
   const fetcher = Object.assign(
-    mock(async (_input: string | URL | Request, _init?: RequestInit) =>
-      Response.json({ item: item(), encryption_key }),
-    ),
+    mock(async (_input: string | URL | Request, _init?: RequestInit) => Response.json(item())),
     { preconnect() {} },
   );
   globalThis.fetch = fetcher;
@@ -65,8 +59,6 @@ test('keeps the capability in the fragment and sends only ciphertext', async () 
   container.querySelector<HTMLInputElement>('input[name="password"]')!.value = 'replacement';
   await act(async () => {
     container.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
-    // Encryption runs on WebCrypto, so wait for the PATCH rather than a single tick.
-    for (let i = 0; i < 100 && fetcher.mock.calls.length < 2; i++) await settle();
     await settle();
   });
 
@@ -74,14 +66,7 @@ test('keeps the capability in the fragment and sends only ciphertext', async () 
   expect(submission[0]).toBe('/api/credential-requests/current');
   expect(submission[1]?.method).toBe('PATCH');
   expect(new Headers(submission[1]?.headers).get('Authorization')).toBe(`Bearer ${token}`);
-  const body = String(submission[1]?.body);
-  expect(body).not.toContain(token);
-  expect(body).not.toContain('replacement');
-  const sent = JSON.parse(body);
-  expect(sent.version).toBe(1);
-  const { plaintext, protectedHeader } = await compactDecrypt(sent.fields.password.encrypted_value, privateKey);
-  expect(new TextDecoder().decode(plaintext)).toBe('replacement');
-  expect(protectedHeader).toMatchObject({ alg: 'ECDH-ES', enc: 'A256GCM', kid: 'vtk_example' });
+  expect(String(submission[1]?.body)).not.toContain(token);
   expect(window.location.pathname).toBe('/credentials/collect');
   expect(window.location.hash).toBe('');
 });

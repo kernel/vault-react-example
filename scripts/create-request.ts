@@ -5,9 +5,12 @@ import { FileCollectionRequestStore } from '../lib/request-store';
 import { collectionTokenDigest, createCollectionToken } from '../lib/server-token';
 
 const mock = process.env.MOCK_VAULT === 'true';
-const [vaultArg, itemArg] = process.argv.slice(2);
+const args = process.argv.slice(2);
+// --encrypted links to the example that encrypts values in the browser.
+const encrypted = args.includes('--encrypted');
+const [vaultArg, itemArg] = args.filter((arg) => arg !== '--encrypted');
 if (!mock && (!vaultArg || !itemArg)) {
-  throw new Error('usage: bun run create-request -- <vault-id-or-name> <item-key>');
+  throw new Error('usage: bun run create-request -- [--encrypted] <vault-id-or-name> <item-key>');
 }
 
 const appOrigin = new URL(required('APP_ORIGIN')).origin;
@@ -46,7 +49,7 @@ await store.save({
   revokedAt: null,
 });
 
-const url = new URL('/credentials/collect', appOrigin);
+const url = new URL(encrypted ? '/credentials/collect-encrypted' : '/credentials/collect', appOrigin);
 url.hash = `token=${token}`;
 process.stdout.write(`${url.toString()}\n`);
 

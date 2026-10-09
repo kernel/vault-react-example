@@ -43,7 +43,7 @@ test('ciphertext round-trips through the backend to the vault', async () => {
       stored.consumedAt = consumedAt;
     },
   };
-  const handler = createCollectionHandler({ appOrigin: origin, store, vault });
+  const handler = createCollectionHandler({ appOrigin: origin, store, vault, encrypted: true });
   const authorization = `Bearer ${token}`;
 
   const read = await handler(

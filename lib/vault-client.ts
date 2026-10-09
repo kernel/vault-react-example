@@ -1,6 +1,6 @@
 import Kernel, { APIError, ConflictError } from '@onkernel/sdk';
 import type { CredentialVaultItem, VaultItem } from '@onkernel/sdk/resources/vaults/items';
-import type { CredentialItem } from '@onkernel/vault-react/data';
+import type { CredentialItem, CredentialSubmission } from '@onkernel/vault-react/data';
 import { compactDecrypt, exportJWK, generateKeyPair, type CryptoKey } from 'jose';
 import type { EncryptedSubmission, VaultEncryptionKey } from './encrypted-submission';
 import type { CollectionRequest } from './request-store';
@@ -11,7 +11,7 @@ export class VaultInvalidRequestError extends Error {}
 export interface CredentialVaultClient {
   retrieve(request: CollectionRequest): Promise<unknown>;
   encryptionKey(request: CollectionRequest): Promise<VaultEncryptionKey>;
-  update(request: CollectionRequest, submission: EncryptedSubmission): Promise<unknown>;
+  update(request: CollectionRequest, submission: CredentialSubmission | EncryptedSubmission): Promise<unknown>;
 }
 
 function credentialItem(item: VaultItem): CredentialVaultItem {
@@ -44,7 +44,7 @@ export class KernelCredentialVaultClient implements CredentialVaultClient {
     return { kid, jwk };
   }
 
-  async update(request: CollectionRequest, submission: EncryptedSubmission) {
+  async update(request: CollectionRequest, submission: CredentialSubmission | EncryptedSubmission) {
     try {
       return credentialItem(
         await this.kernel.vaults.items.update(
@@ -82,7 +82,7 @@ export class MockCredentialVaultClient implements CredentialVaultClient {
     return (await this.keyPair()).public;
   }
 
-  async update(request: CollectionRequest, submission: EncryptedSubmission) {
+  async update(request: CollectionRequest, submission: CredentialSubmission | EncryptedSubmission) {
     const item = this.items.get(request.itemId) ?? this.createItem(request.itemId);
     if (item.version !== submission.version) throw new VaultConflictError();
     for (const [name, edit] of Object.entries(submission.fields)) {

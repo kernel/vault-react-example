@@ -1,7 +1,6 @@
 import { expect, mock, test } from 'bun:test';
-import type { CredentialItem } from '@onkernel/vault-react/data';
+import type { CredentialItem, CredentialSubmission } from '@onkernel/vault-react/data';
 import { createCollectionHandler } from '../lib/collection-handler';
-import type { EncryptedSubmission, VaultEncryptionKey } from '../lib/encrypted-submission';
 import type { CollectionRequest, CollectionRequestStore } from '../lib/request-store';
 import { collectionTokenDigest } from '../lib/server-token';
 import { VaultConflictError, type CredentialVaultClient } from '../lib/vault-client';
@@ -11,8 +10,6 @@ const token = 'a'.repeat(43);
 const digest = collectionTokenDigest(token);
 const authorization = `Bearer ${token}`;
 const now = 1_700_000_000_000;
-const encryptionKey: VaultEncryptionKey = { kid: 'vtk_example', jwk: { kty: 'EC', crv: 'P-256', x: 'x', y: 'y' } };
-const jwe = 'eyJhbGciOiJFQ0RILUVTIn0..aXY.Y2lwaGVydGV4dA.dGFn';
 
 function credentialItem(): CredentialItem {
   return {
@@ -68,12 +65,12 @@ function setup() {
   const store = new MemoryStore();
   const retrieve = mock(async (_request: CollectionRequest): Promise<unknown> => credentialItem());
   const update = mock(
-    async (_request: CollectionRequest, _submission: EncryptedSubmission): Promise<unknown> => ({
+    async (_request: CollectionRequest, _submission: CredentialSubmission): Promise<unknown> => ({
       ...credentialItem(),
       version: 8,
     }),
   );
-  const vault: CredentialVaultClient = { retrieve, encryptionKey: async () => encryptionKey, update };
+  const vault: CredentialVaultClient = { retrieve, encryptionKey: mock(), update };
   const handler = createCollectionHandler({ appOrigin: origin, store, vault, now: () => now });
   return { handler, store, retrieve, update };
 }
@@ -98,13 +95,13 @@ test('only a valid fragment bearer can authorize a request', async () => {
   expect(retrieve).not.toHaveBeenCalled();
 });
 
-test('returns the safe item projection and the vault encryption key', async () => {
+test('returns only the safe item projection', async () => {
   const { handler } = setup();
   const response = await handler(get());
   expect(response.status).toBe(200);
   expect(response.headers.get('Cache-Control')).toBe('no-store');
   expect(response.headers.get('Referrer-Policy')).toBe('no-referrer');
-  expect(await response.json()).toEqual({ item: credentialItem(), encryption_key: encryptionKey });
+  expect(await response.json()).toEqual(credentialItem());
 });
 
 test('rejects expired, consumed, revoked, and replaced targets', async () => {
@@ -131,10 +128,10 @@ test('rejects cross-origin writes before loading the item', async () => {
   expect(retrieve).not.toHaveBeenCalled();
 });
 
-test('relays ciphertext to the mapped target with rendered version and consumes the request', async () => {
+test('writes the mapped target with rendered version and consumes the request', async () => {
   const { handler, store, update } = setup();
   const response = await handler(
-    patch({ version: 7, fields: { password: { encrypted_value: jwe }, note: { value: null } } }),
+    patch({ version: 7, fields: { password: { value: ' exact ' } } }),
   );
   expect(response.status).toBe(200);
   expect(update).toHaveBeenCalledTimes(1);
@@ -145,7 +142,7 @@ test('relays ciphertext to the mapped target with rendered version and consumes 
   });
   expect(update.mock.calls[0][1]).toEqual({
     version: 7,
-    fields: { password: { encrypted_value: jwe }, note: { value: null } },
+    fields: { password: { value: ' exact ' } },
   });
   expect(store.request?.consumedAt).toBe(now);
   expect(await (await handler(get())).json()).toEqual({ code: 'consumed' });
@@ -160,30 +157,24 @@ test('unchanged completion skips the vault write and consumes the request', asyn
 
 test('stale writes return a conflict without consuming the request', async () => {
   const { handler, store, update } = setup();
-  expect((await handler(patch({ version: 6, fields: { note: { encrypted_value: jwe } } }))).status).toBe(409);
+  expect((await handler(patch({ version: 6, fields: { note: { value: 'edit' } } }))).status).toBe(409);
   expect(update).not.toHaveBeenCalled();
   update.mockImplementationOnce(async () => {
     throw new VaultConflictError();
   });
-  expect((await handler(patch({ version: 7, fields: { note: { encrypted_value: jwe } } }))).status).toBe(409);
+  expect((await handler(patch({ version: 7, fields: { note: { value: 'edit' } } }))).status).toBe(409);
   expect(store.request?.consumedAt).toBeNull();
 });
 
-test('rejects plaintext values, TOTP, unknown fields, required clearing, and malformed ciphertext', async () => {
+test('rejects TOTP, unknown fields, required clearing, oversized bodies, and malformed values', async () => {
   const { handler, update } = setup();
   for (const body of [
-    { version: 7, fields: { password: { value: 'plaintext' } } },
-    { version: 7, fields: { note: { value: '' } } },
-    { version: 7, fields: { note: { value: null, encrypted_value: jwe } } },
-    { version: 7, fields: { note: { encrypted_value: 'not-a-jwe' } } },
-    { version: 7, fields: { note: { encrypted_value: `${jwe}.extra` } } },
-    { version: 7, fields: { note: { encrypted_value: null } } },
-    { version: 7, fields: { note: { encrypted_value: `${'a'.repeat(24 * 1024)}....` } } },
-    { version: 7, fields: { otp: { encrypted_value: jwe } } },
-    { version: 7, fields: { unknown: { encrypted_value: jwe } } },
+    { version: 7, fields: { otp: { value: 'seed' } } },
+    { version: 7, fields: { unknown: { value: 'edit' } } },
     { version: 7, fields: { password: { value: null } } },
+    { version: 7, fields: { note: { value: '' } } },
     { version: 7, fields: {}, vaultId: 'attacker-vault' },
-    { version: 7, fields: { note: { encrypted_value: `a${'.'.repeat(4)}${'b'.repeat(128 * 1024)}` } } },
+    { version: 7, fields: { note: { value: 'x'.repeat(128 * 1024) } } },
   ]) {
     expect((await handler(patch(body))).status).toBe(400);
   }

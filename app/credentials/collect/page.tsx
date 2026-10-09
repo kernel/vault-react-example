@@ -6,7 +6,7 @@ export default function Page() {
       <section className="collection-card">
         <p className="eyebrow">Secure credential request</p>
         <h1>Connect your account</h1>
-        <p className="intro">Your credentials are encrypted in this page. Only Kernel can decrypt them.</p>
+        <p className="intro">Your credentials are sent directly to the application that requested them.</p>
         <CollectionPage />
       </section>
     </main>
