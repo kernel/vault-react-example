@@ -1,4 +1,5 @@
 import { safeCredentialItem, type CredentialSubmission } from '@onkernel/vault-react/data';
+import type { EncryptedSubmission } from './encrypted-submission';
 import type { CollectionRequestStore } from './request-store';
 import { collectionTokenDigest } from './server-token';
 import {
@@ -8,6 +9,9 @@ import {
 } from './vault-client';
 
 const bearerPattern = /^Bearer ([A-Za-z0-9_-]{43})$/;
+// Compact JWE: five base64url segments. Kernel rejects anything it cannot decrypt.
+const compactJwePattern = /^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]*){4}$/;
+const maxEncryptedValueLength = 24 * 1024;
 
 function json(body: unknown, status = 200) {
   return Response.json(body, {
@@ -48,11 +52,14 @@ export function createCollectionHandler({
   appOrigin,
   store,
   vault,
+  encrypted = false,
   now = Date.now,
 }: {
   appOrigin: string;
   store: CollectionRequestStore;
   vault: CredentialVaultClient;
+  /** Serve the vault's encryption key and accept only `encrypted_value` edits (or clears). */
+  encrypted?: boolean;
   now?: () => number;
 }) {
   const trustedOrigin = new URL(appOrigin).origin;
@@ -75,7 +82,11 @@ export function createCollectionHandler({
 
       const item = safeCredentialItem(await vault.retrieve(mapping));
       if (item.id !== mapping.itemId) return json({ code: 'unavailable' }, 404);
-      if (request.method === 'GET') return json(item);
+      if (request.method === 'GET') {
+        if (!encrypted) return json(item);
+        const { kid, jwk } = await vault.encryptionKey(mapping);
+        return json({ item, encryption_key: { kid, jwk } });
+      }
       if (!request.headers.get('Content-Type')?.startsWith('application/json')) {
         return json({ code: 'invalid' }, 400);
       }
@@ -109,6 +120,18 @@ export function createCollectionHandler({
           return json({ code: 'invalid' }, 400);
         }
         const replacement = edit as Record<string, unknown>;
+        if (encrypted) {
+          // Plaintext values are rejected: this route only relays ciphertext or a clear.
+          const value = replacement.encrypted_value;
+          const clear = Object.hasOwn(replacement, 'value') && replacement.value === null && !field.required;
+          const ciphertext = typeof value === 'string' &&
+            value.length <= maxEncryptedValueLength &&
+            compactJwePattern.test(value);
+          if (Object.keys(replacement).length !== 1 || !(clear || ciphertext)) {
+            return json({ code: 'invalid' }, 400);
+          }
+          continue;
+        }
         if (
           Object.keys(replacement).length !== 1 ||
           !Object.hasOwn(replacement, 'value') ||
@@ -122,7 +145,7 @@ export function createCollectionHandler({
         }
       }
 
-      const submission = input as CredentialSubmission;
+      const submission = input as CredentialSubmission | EncryptedSubmission;
       if (submission.version !== item.version) return json({ code: 'stale' }, 409);
       if (!entries.length) {
         await store.markConsumed(digest, now());

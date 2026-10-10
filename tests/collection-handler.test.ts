@@ -70,7 +70,7 @@ function setup() {
       version: 8,
     }),
   );
-  const vault: CredentialVaultClient = { retrieve, update };
+  const vault: CredentialVaultClient = { retrieve, encryptionKey: mock(), update };
   const handler = createCollectionHandler({ appOrigin: origin, store, vault, now: () => now });
   return { handler, store, retrieve, update };
 }

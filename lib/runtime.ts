@@ -3,10 +3,16 @@ import { createCollectionHandler } from './collection-handler';
 import { FileCollectionRequestStore } from './request-store';
 import { KernelCredentialVaultClient, MockCredentialVaultClient } from './vault-client';
 
-let handler: ReturnType<typeof createCollectionHandler> | undefined;
+let handlers: { plaintext: CollectionHandler; encrypted: CollectionHandler } | undefined;
+type CollectionHandler = ReturnType<typeof createCollectionHandler>;
 
-export function getCollectionHandler() {
-  if (handler) return handler;
+/** `encrypted` serves the encrypted-values example; both share one store and vault client. */
+export function getCollectionHandler(encrypted = false) {
+  handlers ??= create();
+  return encrypted ? handlers.encrypted : handlers.plaintext;
+}
+
+function create() {
   const appOrigin = required('APP_ORIGIN');
   const storePath = join(process.cwd(), '.data', 'credential-requests.json');
   const store = new FileCollectionRequestStore(storePath);
@@ -16,8 +22,10 @@ export function getCollectionHandler() {
         required('KERNEL_API_KEY'),
         process.env.KERNEL_API_BASE_URL,
       );
-  handler = createCollectionHandler({ appOrigin, store, vault });
-  return handler;
+  return {
+    plaintext: createCollectionHandler({ appOrigin, store, vault }),
+    encrypted: createCollectionHandler({ appOrigin, store, vault, encrypted: true }),
+  };
 }
 
 function required(name: string) {
