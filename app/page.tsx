@@ -8,6 +8,10 @@ export default function Home() {
           Generate a one-time collection link with <code>bun run create-request</code>, then open the
           printed URL. Add <code>--encrypted</code> for the flow that encrypts values in the browser.
         </p>
+        <p className="intro">
+          For card enrollment, run <code>bun run create-card-link -- &lt;vault-name&gt;</code> and open the
+          printed <code>/cards/add</code> link.
+        </p>
       </section>
     </main>
   );

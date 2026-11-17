@@ -121,3 +121,47 @@ h1 {
   color: #166534;
   font-weight: 600;
 }
+
+.customer-card-capture .credential-title {
+  margin: 0;
+  font-size: 1.75rem;
+  line-height: 1.2;
+}
+
+.customer-card-capture .credential-header {
+  margin-bottom: 28px;
+}
+
+.customer-card-capture .credential-header .credential-description {
+  margin: 12px 0 0;
+}
+
+.customer-card-capture .credential-form {
+  display: grid;
+  gap: 20px;
+}
+
+/* VGS renders each input in an iframe that fills this container. */
+.customer-card-capture .card-field {
+  height: 42px;
+  padding: 0 12px;
+  border: 1px solid #9ca3af;
+  border-radius: 6px;
+  background: #ffffff;
+}
+
+.customer-card-capture .card-field iframe {
+  width: 100%;
+  height: 100%;
+}
+
+.customer-card-capture .card-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+/* Evervault's iframe holds its own labels and inputs and sizes itself. */
+.customer-card-capture .evervault-card iframe {
+  width: 100%;
+}
