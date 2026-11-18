@@ -61,9 +61,19 @@ export function CardCapturePage() {
 
   useEffect(() => {
     // The token travels in the fragment, so it never reaches a server log or a
-    // referrer. Read it once, then remove it from the address bar.
-    setToken(readCaptureToken(window.location.hash));
-    window.history.replaceState(null, '', window.location.pathname);
+    // referrer. Read it, then remove it from the address bar. An empty fragment
+    // keeps the token already read: Strict Mode runs this effect twice, and the
+    // second run sees the fragment the first one cleared. Opening another link
+    // in this tab changes only the fragment, so read again on hashchange;
+    // KernelCardCapture starts over when its token changes.
+    const read = () => {
+      const hash = window.location.hash;
+      setToken((current) => (hash ? readCaptureToken(hash) : (current ?? null)));
+      if (hash) window.history.replaceState(null, '', window.location.pathname);
+    };
+    read();
+    window.addEventListener('hashchange', read);
+    return () => window.removeEventListener('hashchange', read);
   }, []);
 
   if (token === undefined) return null;
