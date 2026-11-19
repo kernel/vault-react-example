@@ -104,3 +104,74 @@ test('switches to a new link opened in the same tab', async () => {
     expect(new Headers(init?.headers).get('Authorization')).toBe(`Bearer ${second}`);
   }
 });
+
+test('going back to an earlier link restores that link', async () => {
+  const second = `s36utp6h7ycc1bpm6pyv1g2q.${'b'.repeat(43)}`;
+  window.location.href = `https://app.example.com/cards/add#token=${token}`;
+  const fetchMock = mock(async (_input: RequestInfo | URL, _init?: RequestInit) =>
+    Response.json({ status: 'completed' }),
+  );
+  globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+  await act(async () => root.render(<CardCapturePage />));
+  await act(settle);
+  const firstEntry = window.history.state;
+
+  await act(async () => {
+    window.location.hash = `token=${second}`;
+    window.dispatchEvent(new HashChangeEvent('hashchange'));
+  });
+  await act(settle);
+  fetchMock.mockClear();
+
+  await act(async () => {
+    window.history.replaceState(firstEntry, '', '/cards/add');
+    window.dispatchEvent(new PopStateEvent('popstate', { state: firstEntry }));
+  });
+  await act(settle);
+
+  expect(fetchMock).toHaveBeenCalled();
+  for (const [, init] of fetchMock.mock.calls) {
+    expect(new Headers(init?.headers).get('Authorization')).toBe(`Bearer ${token}`);
+  }
+});
+
+test('an entry whose link is no longer in memory asks for the link again', async () => {
+  window.location.href = `https://app.example.com/cards/add#token=${token}`;
+  const fetchMock = mock(async (_input: RequestInfo | URL, _init?: RequestInit) =>
+    Response.json({ status: 'completed' }),
+  );
+  globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+  await act(async () => root.render(<CardCapturePage />));
+  await act(settle);
+
+  await act(async () => {
+    window.history.replaceState(null, '', '/cards/add');
+    window.dispatchEvent(new PopStateEvent('popstate', { state: null }));
+  });
+  await act(settle);
+
+  expect(container.textContent).toContain('This link is incomplete');
+});
+
+test('sends the token to the API origin the server and scripts use', async () => {
+  const original = process.env.KERNEL_API_BASE_URL;
+  process.env.KERNEL_API_BASE_URL = 'https://api.staging.example';
+  try {
+    window.location.href = `https://app.example.com/cards/add#token=${token}`;
+    const fetchMock = mock(async (_input: RequestInfo | URL, _init?: RequestInit) =>
+      Response.json({ status: 'completed' }),
+    );
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    await act(async () => root.render(<CardCapturePage />));
+    await act(settle);
+
+    expect(fetchMock).toHaveBeenCalled();
+    expect(String(fetchMock.mock.calls[0][0])).toBe('https://api.staging.example/vault/card-captures/current');
+  } finally {
+    if (original === undefined) delete process.env.KERNEL_API_BASE_URL;
+    else process.env.KERNEL_API_BASE_URL = original;
+  }
+});
