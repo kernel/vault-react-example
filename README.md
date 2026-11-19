@@ -1,8 +1,10 @@
-# Customer-hosted credential collection
+# Customer-hosted credential and card collection
 
-A runnable Next.js example for collecting credentials with [`@onkernel/vault-react`](https://www.npmjs.com/package/@onkernel/vault-react). The browser renders Kernel's unstyled credential form while a same-origin backend keeps the Kernel API key private and maps one-time bearer capabilities to vault items.
+A runnable Next.js example for collecting credentials and payment cards on your own domain with [`@onkernel/vault-react`](https://www.npmjs.com/package/@onkernel/vault-react) 0.5.0 or newer. The browser renders Kernel's unstyled forms while a same-origin backend keeps the Kernel API key private.
 
-It includes two flows that share the same backend pieces:
+- **`/cards/add`**: a branded card enrollment page for a Kernel wallet. See [Card capture](#card-capture).
+
+The credential flows share the same backend pieces:
 
 - **`/credentials/collect`**: the page sends entered values to this backend, which forwards them to Kernel as `value`.
 - **`/credentials/collect-encrypted`**: the page encrypts values in the browser to the vault's public key, this backend forwards the ciphertext as `encrypted_value`, and only Kernel can decrypt it. Use this when plaintext must never reach your backend, proxies, or request logs. See [Encrypted values](#encrypted-values).
@@ -53,6 +55,7 @@ The fragment is not sent in page requests or referrers. The page sends it only i
 - `app/credentials/collect-encrypted` and `app/api/credential-requests/current-encrypted` are the encrypted flow. `lib/encrypted-submission.ts` turns a `CredentialForm` submission into `encrypted_value` fields with [`jose`](https://github.com/panva/jose).
 - `lib/request-store.ts` defines the durable `CollectionRequestStore` boundary.
 - `scripts/create-request.ts` creates a short-lived link without persisting the raw token.
+- `app/cards/add` and `scripts/create-card-link.ts` are the card capture flow. `lib/capture-token.ts` reads the capture token from the fragment.
 
 Successful submissions mark the mapping consumed. Kernel writes include both the rendered version and immutable item ID, so a stale form or a deleted-and-recreated key cannot redirect a write.
 
@@ -71,6 +74,42 @@ The encrypted flow differs from the default flow in three places:
 The encrypted route rejects plaintext `value` strings, so a misconfigured page cannot silently fall back to plaintext. Kernel rejects ciphertext encrypted for a different vault with `400 encryption_key_mismatch`, which this example reports as `invalid`.
 
 Requires `@onkernel/sdk` 0.122.0 or newer and HTTPS (WebCrypto needs a secure context; `localhost` also works). The page's JavaScript still sees raw values before encrypting them, so keep the collection route free of third-party scripts. If your backend already holds plaintext, use the default flow.
+
+## Card capture
+
+`/cards/add` renders `KernelCardCapture` for one Kernel wallet payment method. Card details are entered in the card vault's own iframes (VGS or Evervault, depending on your organization), so this page, its backend, and Kernel never receive the card number. Unlike the credential flows, the component calls the Kernel API directly from the browser with the capture token; there is no backend route.
+
+Requires `KERNEL_API_KEY` in `.env.local`. There is no mock mode. Create a link:
+
+```sh
+bun run create-card-link -- <vault-name> [wallet-key]
+```
+
+The script upserts the vault and a `provider: "kernel"` wallet (`card-wallet` by default), runs `add_payment_method`, and prints:
+
+```text
+https://app.example.com/cards/add#token=<payment-method-id>.<secret>
+```
+
+A capture link lasts 30 minutes, and a wallet can have at most 3 open enrollment links. The page reads the token from the fragment, removes it from the address bar, and renders the form.
+
+Styling has three layers, all in `app/cards/add/card-capture-page.tsx` and `app/globals.css`:
+
+1. Page CSS styles the surrounding form through the component's class hooks (`credential-title`, `credential-primary`, `card-field`, ...) under `className`.
+2. `fieldCss` styles the VGS inputs inside their iframes.
+3. `evervaultTheme` styles Evervault's iframe, which renders its own labels, inputs, and errors. Page CSS and `fieldCss` can't reach it.
+
+Pass both `fieldCss` and `evervaultTheme`; the component uses the one that matches the card vault. Override all customer-facing copy with `labels`; the defaults mention Kernel.
+
+Your CSP must allow the card vault and the Kernel API:
+
+```text
+script-src 'self' 'nonce-<per-request-nonce>' https://js.verygoodvault.com https://js.evervault.com;
+frame-src https://js.verygoodvault.com https://ui-components.evervault.com;
+connect-src 'self' https://api.onkernel.com https://keys.evervault.com;
+```
+
+If the card vault's script or iframe doesn't load within 30 seconds, for example because the CSP blocks it, the component shows a retry button. `onComplete` means Kernel stored the card; confirm the payment method is `active` from your backend before treating it as ready. See [Embedded Card Capture](https://kernel.sh/docs/integrations/wallets/embedded-card-capture) for every prop, class hook, and error code.
 
 ## Use a production store
 

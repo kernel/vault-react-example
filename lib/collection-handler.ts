@@ -1,4 +1,4 @@
-import { safeCredentialItem, type CredentialSubmission } from '@onkernel/vault-react/data';
+import { formFieldTypes, safeCredentialItem, type CredentialSubmission } from '@onkernel/vault-react/data';
 import type { EncryptedSubmission } from './encrypted-submission';
 import type { CollectionRequestStore } from './request-store';
 import { collectionTokenDigest } from './server-token';
@@ -116,7 +116,10 @@ export function createCollectionHandler({
       if (entries.length > 32) return json({ code: 'invalid' }, 400);
       for (const [name, edit] of entries) {
         const field = item.spec.fields.find((definition) => definition.name === name);
-        if (!field || field.type === 'totp' || !edit || typeof edit !== 'object' || Array.isArray(edit)) {
+        // Only fields CredentialForm renders can be written. Others, such as
+        // totp or passkey, are never shown to the user.
+        const renderable = field && (formFieldTypes as readonly string[]).includes(field.type);
+        if (!renderable || !edit || typeof edit !== 'object' || Array.isArray(edit)) {
           return json({ code: 'invalid' }, 400);
         }
         const replacement = edit as Record<string, unknown>;

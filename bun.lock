@@ -5,8 +5,8 @@
     "": {
       "name": "vault-react-example",
       "dependencies": {
-        "@onkernel/sdk": "^0.122.0",
-        "@onkernel/vault-react": "^0.1.0",
+        "@onkernel/sdk": "^0.148.0",
+        "@onkernel/vault-react": "^0.5.0",
         "jose": "^6.2.12",
         "next": "^16.3.5",
         "react": "^19.2.3",
@@ -99,9 +99,9 @@
 
     "@next/swc-win32-x64-msvc": ["@next/swc-win32-x64-msvc@16.3.5", "", { "os": "win32", "cpu": "x64" }, "sha512-LNdCHzgLFc+UeqMS84LzXPaeBRKyqDN9OMyFAr1OrB0XrNw78IRrEVtZvvA7245W/HsaoeVOQX9jPjPk8jojwA=="],
 
-    "@onkernel/sdk": ["@onkernel/sdk@0.122.0", "", {}, "sha512-cHjduH6Ssfs29Q/vetvvc4jACIDDTd/OVJ0p3frLXFJQ9mloLgKygyAilBrJBuXNtgeUsd9fhgXfVsTpDzhZGA=="],
+    "@onkernel/sdk": ["@onkernel/sdk@0.148.0", "", {}, "sha512-e58SYGkmQoKMTKYv8SNpzbO4uE9Bhz/7dv6iyW8V1dq/m9V7CHNa8L3o9peP2arbaQdyqWCt5kljxKrK5XnlOw=="],
 
-    "@onkernel/vault-react": ["@onkernel/vault-react@0.1.0", "", { "peerDependencies": { "react": ">=18", "react-dom": ">=18" } }, "sha512-XogSCQ3GhtU9Q0TeIFt+pdfKOQVRZHLwKE6Uvj1YvH5CLwaF2q45KgM4jnMmUvrOXamq/of0xh3ECPPtOF/xgA=="],
+    "@onkernel/vault-react": ["@onkernel/vault-react@0.5.0", "", { "peerDependencies": { "react": ">=18", "react-dom": ">=18" } }, "sha512-hm1UvjjcoKdWHpiRxCJ3hmI/xXLDHhBTmHhgwJbgC6rAfDlOcNXbkgTVatxu9IxzgENCMiQRGgqNei18VHv6mg=="],
 
     "@swc/helpers": ["@swc/helpers@0.5.23", "", { "dependencies": { "tslib": "^2.8.0" } }, "sha512-5lSsMOTXURePglDfvuAQUqkGek9Hg2kksOYay2m0+XR++b2NWYL/4sWyuvVBIs8oKnJaxkdi9whaL/sqN13afw=="],
 

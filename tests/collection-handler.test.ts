@@ -180,3 +180,16 @@ test('rejects TOTP, unknown fields, required clearing, oversized bodies, and mal
   }
   expect(update).not.toHaveBeenCalled();
 });
+
+test('rejects edits to field types the form does not render, such as passkeys', async () => {
+  const { handler, retrieve, update } = setup();
+  retrieve.mockImplementation(async () => {
+    const item = credentialItem();
+    item.spec.fields.push({ name: 'login_passkey', type: 'passkey', required: false, sensitive: true });
+    item.state.fields.login_passkey = { has_value: true };
+    return item;
+  });
+  const response = await handler(patch({ version: 7, fields: { login_passkey: { value: 'replacement' } } }));
+  expect(response.status).toBe(400);
+  expect(update).not.toHaveBeenCalled();
+});
